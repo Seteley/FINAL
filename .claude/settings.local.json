@@ -9,7 +9,12 @@
       "PowerShell(Get-ChildItem -Path \"D:\\\\26-1\\\\SIN\\\\FINAL\" -Directory | Where-Object {$_.Name -ne '.venv'} | Select-Object Name)",
       "PowerShell(Get-ChildItem -Path \"D:\\\\26-1\\\\SIN\\\\FINAL\" -Recurse -Exclude '.venv' -File | Where-Object {$_.Extension -ne ''} | Group-Object Extension | Select-Object Name, Count | Sort-Object Count -Descending)",
       "mcp__visualize__read_me",
-      "mcp__visualize__show_widget"
+      "mcp__visualize__show_widget",
+      "PowerShell(python -c \"from google.cloud import bigquery; client = bigquery.Client\\(project='sing1261'\\); datasets = list\\(client.list_datasets\\(\\)\\); print\\(f'Datasets en sing1261 \\({len\\(datasets\\)} total\\):'\\); [print\\(f'  - {d.dataset_id}'\\) for d in datasets]\")",
+      "PowerShell($env:APPDATA; ls \"$env:APPDATA\\\\gcloud\\\\\" 2>$null | Select-Object Name)",
+      "Bash(bq ls *)",
+      "Bash(bq show *)",
+      "Bash(bq query *)"
     ]
   }
 }
