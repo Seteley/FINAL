@@ -97,7 +97,7 @@ def _fmt_num(v: float) -> str:
 
 
 def render(df_com, df_fac, filtros):
-    st.markdown("## Dashboard Comercial")
+    st.markdown("## Dashboard Gestión Comercial")
 
     # ── Aplicar filtros ───────────────────────────────────────────────────────
     df   = df_com.copy()
@@ -135,7 +135,7 @@ def render(df_com, df_fac, filtros):
     where_parts = []
     if filtros.get("periodo"):
         vals = ", ".join(f"'{p}'" for p in filtros["periodo"])
-        where_parts.append(f"FORMAT_DATE('%Y%m', DATE(fecha)) IN ({vals})")
+        where_parts.append(f"id_fecha IN (SELECT id_fecha FROM `sing1261.ali1_curated.DIM_TIEMPO` WHERE anio_mes IN ({vals}))")
     if filtros.get("canal"):
         vals = ", ".join(f"'{c}'" for c in filtros["canal"])
         where_parts.append(
@@ -291,9 +291,10 @@ def render(df_com, df_fac, filtros):
             color_discrete_sequence=["#e63946", "#457b9d", "#2a9d8f"],
         )
         fig_ytd.update_layout(
-            **PLOT_LAYOUT, height=200,
+            **PLOT_LAYOUT, height=220,
             xaxis=dict(tickangle=45, tickfont_size=9),
-            legend=dict(orientation="h", y=1.15, font_size=10),
+            margin=dict(l=20, r=80, t=20, b=10),
+            legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top", font_size=10),
         )
         st.plotly_chart(fig_ytd, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)

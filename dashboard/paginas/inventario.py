@@ -28,21 +28,20 @@ def _semaforo_html(cumple) -> str:
 
 
 def _kpi_card(label: str, value: str, meta_texto: str, cumple: bool | None = None):
-    semaforo = _semaforo_html(cumple)
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-label">{label}</div>
-        <div style="display:flex;align-items:center;">
-            <span class="kpi-value">{value}</span>
-            {semaforo}
-        </div>
-        <div class="kpi-meta"><small>{meta_texto}</small></div>
-    </div>
-    """, unsafe_allow_html=True)
+    semaforo = _semaforo_html(cumple) if cumple is not None else ""
+    meta_html = f"<div class='kpi-meta'><small>{meta_texto}</small></div>" if meta_texto else ""
+    st.markdown(
+        f"<div class='kpi-card'>"
+        f"<div class='kpi-label'>{label}</div>"
+        f"<div style='display:flex;align-items:center;'>"
+        f"<span class='kpi-value'>{value}</span>{semaforo}"
+        f"</div>{meta_html}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render(df_inv, filtros):
-    st.markdown("## Dashboard Inventario")
+    st.markdown("## Dashboard Gestión Operativa")
 
     # ── Aplicar filtros ───────────────────────────────────────────────────────
     df = df_inv.copy()
@@ -134,9 +133,10 @@ def render(df_inv, filtros):
             name="Meta %", mode="lines+markers",
             line=dict(color="#27ae60", width=2), marker=dict(size=6),
         ))
-        fig_alm.update_layout(**PLOT_LAYOUT, height=260,
+        fig_alm.update_layout(**PLOT_LAYOUT, height=280,
                               xaxis=dict(tickangle=30),
-                              legend=dict(orientation="h", y=1.1))
+                              margin=dict(l=20, r=120, t=20, b=10),
+                              legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top"))
         st.plotly_chart(fig_alm, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -181,8 +181,9 @@ def render(df_inv, filtros):
             mode="markers", marker=dict(color="#27ae60", size=8, symbol="diamond"),
             name="Meta",
         ))
-        fig_dc.update_layout(**PLOT_LAYOUT, height=300,
-                             legend=dict(orientation="h", y=1.05))
+        fig_dc.update_layout(**PLOT_LAYOUT, height=320,
+                             margin=dict(l=20, r=120, t=20, b=10),
+                             legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top"))
         st.plotly_chart(fig_dc, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -211,9 +212,10 @@ def render(df_inv, filtros):
             x=df_sq["periodo"], y=df_sq["meta"],
             name="Meta %", line=dict(color="#27ae60", dash="dot", width=2),
         ))
-        fig_sq.update_layout(**PLOT_LAYOUT, height=260,
+        fig_sq.update_layout(**PLOT_LAYOUT, height=280,
                              xaxis=dict(tickangle=45, tickfont_size=8),
-                             legend=dict(orientation="h", y=1.1))
+                             margin=dict(l=20, r=120, t=20, b=10),
+                             legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top"))
         st.plotly_chart(fig_sq, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -244,9 +246,10 @@ def render(df_inv, filtros):
             x=df_sd["periodo"], y=df_sd["meta"],
             name="Meta días", line=dict(color="#27ae60", dash="dot", width=2),
         ))
-        fig_sd.update_layout(**PLOT_LAYOUT, height=260,
+        fig_sd.update_layout(**PLOT_LAYOUT, height=280,
                              xaxis=dict(tickangle=45, tickfont_size=8),
-                             legend=dict(orientation="h", y=1.1))
+                             margin=dict(l=20, r=120, t=20, b=10),
+                             legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top"))
         st.plotly_chart(fig_sd, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 

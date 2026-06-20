@@ -67,7 +67,7 @@ df_fac = get_facturas()
 df_inv = get_inventario()
 
 # Navegación por tabs
-tab_com, tab_inv = st.tabs(["📈 Comercial", "📦 Inventario"])
+tab_com, tab_inv = st.tabs(["📈 Gestión Comercial", "📦 Gestión Operativa"])
 
 # ── Tab Comercial ─────────────────────────────────────────────────────────────
 with tab_com:
