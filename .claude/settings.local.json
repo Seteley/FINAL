@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__bigquery__list_table_ids",
+      "Bash(gcloud storage *)",
+      "Bash(gcloud auth *)",
+      "Bash(curl -s -H \"Authorization: Bearer $\\(gcloud auth application-default print-access-token\\)\" \"https://bigquery.googleapis.com/bigquery/v2/projects/sing1261/savedQueries\")",
+      "mcp__bigquery__execute_sql",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\26-1\\\\SIN\\\\FINAL\" -Directory | Where-Object {$_.Name -ne '.venv'} | Select-Object Name)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\26-1\\\\SIN\\\\FINAL\" -Recurse -Exclude '.venv' -File | Where-Object {$_.Extension -ne ''} | Group-Object Extension | Select-Object Name, Count | Sort-Object Count -Descending)",
+      "mcp__visualize__read_me",
+      "mcp__visualize__show_widget"
+    ]
+  }
+}
