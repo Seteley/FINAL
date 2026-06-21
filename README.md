@@ -261,6 +261,13 @@ Ver sección **Modelos predictivos** abajo.
 
 ## Modelos predictivos
 
+> **Versión v2 disponible.** Existe una iteración mejorada de ambos modelos que **convive**
+> con la v1 (objetos con sufijo `_v2`, generados por `sp_etl_predictive_v2`):
+> pronóstico con **ARIMA_PLUS_XREG** (regresores de feriado e inversión promocional, AIC
+> mejorado en los 6 canales) y clasificador de quiebre con la **evaluación corregida** sobre
+> el holdout 2025. Ver [documentacion_modelos_v2.md](documentacion_modelos_v2.md) y ejecutar
+> con `python run_etl_predictive_v2.py`. La sección siguiente describe la v1 original.
+
 ### Modelo 1: Pronóstico de Ventas por Canal
 
 **Objetivo**: predecir ventas netas diarias (S/.) por canal para los próximos 90 días.  
