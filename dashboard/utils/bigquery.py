@@ -14,7 +14,7 @@ def _query(sql: str) -> pd.DataFrame:
 def get_comercial() -> pd.DataFrame:
     return _query(f"""
         SELECT *
-        FROM `{PROJECT}.ali1_kpi.CUBO_COMERCIAL`
+        FROM `{PROJECT}.ali1_kpi.CUBO_COMERCIAL_TBL`
     """)
 
 
@@ -22,7 +22,7 @@ def get_comercial() -> pd.DataFrame:
 def get_facturas() -> pd.DataFrame:
     return _query(f"""
         SELECT *
-        FROM `{PROJECT}.ali1_kpi.CUBO_FACTURAS`
+        FROM `{PROJECT}.ali1_kpi.CUBO_FACTURAS_TBL`
     """)
 
 
@@ -30,7 +30,7 @@ def get_facturas() -> pd.DataFrame:
 def get_inventario() -> pd.DataFrame:
     return _query(f"""
         SELECT *
-        FROM `{PROJECT}.ali1_kpi.CUBO_INVENTARIO`
+        FROM `{PROJECT}.ali1_kpi.CUBO_INVENTARIO_TBL`
     """)
 
 

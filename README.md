@@ -8,7 +8,7 @@
 
 ## Descripción general
 
-Pipeline de datos de extremo a extremo implementado en Google Cloud Platform para Alicorp. Ingiere datos transaccionales y maestros desde GCS, los transforma a través de cuatro capas (Raw → Trusted → Curated → Predictive) y entrena dos modelos de Machine Learning en BigQuery ML: pronóstico de ventas por canal (ARIMA_PLUS) y predicción de quiebre de stock (BOOSTED_TREE_CLASSIFIER).
+Pipeline de datos de extremo a extremo implementado en Google Cloud Platform para Alicorp. Ingiere datos transaccionales y maestros desde GCS, los transforma a través de cuatro capas (Raw → Trusted → Curated → Predictive) y entrena dos modelos de Machine Learning en BigQuery ML: pronóstico de ventas por canal (ARIMA_PLUS) y predicción de quiebre de stock (BOOSTED_TREE_CLASSIFIER). Sobre la capa Curated se construye una capa KPI con cubos analíticos implementados como **Materialized Views** en BigQuery, que sirven de fuente al dashboard Streamlit.
 
 ---
 
@@ -29,10 +29,14 @@ ali1_trusted    ← limpieza, deduplicación, flags de calidad
     ▼
 ali1_curated    ← modelo estrella: 7 dimensiones + 4 tablas de hechos
     │
-    ▼
-ali1_predictive ← entrenamiento ML + predicciones
-    ├── ARIMA_PLUS               → pred_ventas_forecast (90 días × 6 canales)
-    └── BOOSTED_TREE_CLASSIFIER  → pred_quiebre_stock (scoring completo)
+    ├──▶ ali1_predictive ← entrenamiento ML + predicciones
+    │        ├── ARIMA_PLUS               → pred_ventas_forecast (90 días × 6 canales)
+    │        └── BOOSTED_TREE_CLASSIFIER  → pred_quiebre_stock (scoring completo)
+    │
+    └──▶ ali1_kpi        ← cubos analíticos (Materialized Views) para el dashboard
+             ├── CUBO_COMERCIAL_MV   → ventas, margen, metas comerciales
+             ├── CUBO_FACTURAS       → ticket promedio, frecuencia de compra
+             └── CUBO_INVENTARIO_MV  → stock, quiebre, cobertura, metas operativas
 ```
 
 Todos los ETL son **idempotentes** y registran cada operación en su tabla `etl_control` con estado `EXITOSO`/`ERROR`, conteo de filas y timestamp.
@@ -104,6 +108,11 @@ FINAL/
 ├── run_etl_trusted.py              # Ejecuta solo ETL Trusted
 ├── run_etl_predictive.py           # Ejecuta solo ETL Predictive (ML)
 ├── run_all.py                      # Ejecuta el pipeline completo de inicio a fin
+│
+├── sql/                            # Definición de los cubos analíticos (capa ali1_kpi)
+│   ├── cubo_comercial_mv.sql       # CUBO_COMERCIAL_MV — Materialized View de ventas
+│   ├── cubo_facturas_mv.sql        # CUBO_FACTURAS — Vista regular (ver nota abajo)
+│   └── cubo_inventario_mv.sql      # CUBO_INVENTARIO_MV — Materialized View de inventario
 │
 ├── create_datasets.py              # Setup inicial de datasets
 ├── documentacion_modelos.md        # Documentación detallada de modelos ML
@@ -202,6 +211,41 @@ python etl_raw.py
 - **7 dimensiones**: `DIM_TIEMPO` (con feriados Perú), `DIM_CLIENTE`, `DIM_PRODUCTO`, `DIM_CANAL`, `DIM_GEOGRAFIA`, `DIM_ALMACEN`, `DIM_VENDEDOR`
 - **4 tablas de hechos**: ventas, pedidos, inventario, metas
 - `DIM_TIEMPO` cubre 2023-01-01 → 2025-12-31 con flags de feriado peruano
+
+### ali1_kpi — Capa de cubos analíticos
+
+Esta capa expone los datos de `ali1_curated` como **cubos analíticos listos para el dashboard**, pre-agregados por todas las dimensiones relevantes (tiempo, canal, geografía, producto, vendedor, almacén).
+
+#### ¿Por qué Materialized Views y no vistas normales?
+
+Las vistas normales (`CREATE OR REPLACE VIEW`) ejecutan los JOINs y agregaciones desde cero en cada consulta del dashboard. Con datos históricos de 2–3 años a granularidad diaria, eso implica escanear millones de filas cada vez que alguien filtra por región o cambia el período.
+
+Las **Materialized Views** (`CREATE MATERIALIZED VIEW`) hacen que BigQuery compute y almacene físicamente el resultado. Cuando el dashboard consulta el cubo, lee directamente del resultado pre-computado en lugar de recalcular. Esto es equivalente a lo que hacen los motores OLAP clásicos (SSAS, Mondrian) con sus agregaciones pre-calculadas.
+
+Se configuran con `refresh_interval_minutes = 60`, por lo que BigQuery actualiza automáticamente el contenido cada hora cuando las tablas base cambian.
+
+#### Cubos disponibles
+
+| Cubo | Tipo BigQuery | Filas | Razón del tipo |
+|---|---|---|---|
+| `CUBO_COMERCIAL_MV` | **Materialized View** | ~500k | Soporta todos los agregados necesarios (`SUM`, `MAX`) |
+| `CUBO_FACTURAS` | Vista normal | — | BigQuery no soporta `COUNT(DISTINCT)` en Materialized Views; se mantiene como vista para calcular ticket promedio y frecuencia de compra |
+| `CUBO_INVENTARIO_MV` | **Materialized View** | ~40k | Soporta todos los agregados; `dias_cobertura` se deriva en el dashboard como `stock / demanda` |
+
+#### Para recrear los cubos
+
+```bash
+# Desde BigQuery Console o con el cliente Python:
+python -c "
+from google.cloud import bigquery
+client = bigquery.Client(project='sing1261')
+for f in ['sql/cubo_comercial_mv.sql', 'sql/cubo_facturas_mv.sql', 'sql/cubo_inventario_mv.sql']:
+    client.query(open(f).read()).result()
+    print(f, '— OK')
+"
+```
+
+> **Para volver a las vistas originales**: cambiar `CUBO_COMERCIAL_MV` → `CUBO_COMERCIAL` y `CUBO_INVENTARIO_MV` → `CUBO_INVENTARIO` en `dashboard/utils/bigquery.py`. Las vistas originales permanecen intactas en BigQuery.
 
 ### ali1_predictive — Modelos ML
 Ver sección **Modelos predictivos** abajo.
@@ -325,12 +369,14 @@ El dashboard se abre en `http://localhost:8501`.
 
 ### Fuentes de datos del dashboard
 
-| Función | Tabla BigQuery | TTL caché |
-|---|---|---|
-| `get_comercial()` | `sing1261.ali1_kpi.CUBO_COMERCIAL` | 1 hora |
-| `get_facturas()` | `sing1261.ali1_kpi.CUBO_FACTURAS` | 1 hora |
-| `get_inventario()` | `sing1261.ali1_kpi.CUBO_INVENTARIO` | 1 hora |
-| `get_frecuencia_compra()` | `sing1261.ali1_curated.FACT_VENTAS` | 1 hora |
+| Función | Tabla BigQuery | Tipo | TTL caché |
+|---|---|---|---|
+| `get_comercial()` | `sing1261.ali1_kpi.CUBO_COMERCIAL_MV` | Materialized View | 1 hora |
+| `get_facturas()` | `sing1261.ali1_kpi.CUBO_FACTURAS` | Vista normal | 1 hora |
+| `get_inventario()` | `sing1261.ali1_kpi.CUBO_INVENTARIO_MV` | Materialized View | 1 hora |
+| `get_frecuencia_compra()` | `sing1261.ali1_curated.FACT_VENTAS` | Tabla física | Sin caché (filtros dinámicos) |
+
+El caché de Streamlit (`@st.cache_data(ttl=3600)`) almacena el DataFrame en memoria durante 1 hora. La primera carga descarga todos los datos; las interacciones posteriores (filtros, navegación) operan sobre el DataFrame en memoria sin nuevas consultas a BigQuery.
 
 ### Tab 1 — Gestión Comercial
 
@@ -383,8 +429,12 @@ El dashboard se abre en `http://localhost:8501`.
 ### Dependencias del dashboard
 
 ```bash
-pip install streamlit plotly pandas google-cloud-bigquery
+pip install streamlit plotly pandas google-cloud-bigquery google-cloud-bigquery-storage db-dtypes
 ```
+
+- **`google-cloud-bigquery`**: cliente Python para ejecutar consultas y leer resultados.
+- **`google-cloud-bigquery-storage`**: transfiere datos usando la BigQuery Storage API (formato Arrow columnar comprimido), lo que hace la descarga de grandes volúmenes ~10× más rápida que la API REST estándar. **Requerido** para que el dashboard cargue en segundos en lugar de minutos.
+- **`db-dtypes`**: extensión de tipos de datos de BigQuery para pandas (DATE, TIME, NUMERIC). Requerido por el cliente BigQuery al convertir resultados a DataFrame.
 
 ---
 
@@ -393,7 +443,9 @@ pip install streamlit plotly pandas google-cloud-bigquery
 | Servicio | Uso |
 |---|---|
 | **Cloud Storage (GCS)** | Almacenamiento de archivos CSV fuente (`ali1_bucket`) |
-| **BigQuery** | Data warehouse: datasets Raw, Trusted, Curated, Predictive |
+| **BigQuery** | Data warehouse: datasets Raw, Trusted, Curated, KPI y Predictive |
+| **BigQuery Materialized Views** | Pre-cómputo OLAP de los cubos analíticos (`ali1_kpi`); se refrescan automáticamente cada 60 min |
+| **BigQuery Storage API** | Transferencia rápida de datos al dashboard mediante protocolo Arrow columnar |
 | **BigQuery ML** | Entrenamiento y scoring de modelos ARIMA_PLUS y BOOSTED_TREE_CLASSIFIER |
 
 ---

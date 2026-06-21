@@ -1,7 +1,7 @@
 from google.cloud import bigquery
 
 client = bigquery.Client(project="sing1261")
-datasets = ["ali1_raw", "ali1_trusted", "ali1_curated", "ali1_predictive"]
+datasets = ["ali1_raw", "ali1_trusted", "ali1_curated", "ali1_kpi", "ali1_predictive"]
 
 # 1. Borrar y recrear todos los datasets
 print("=== Reiniciando datasets ===")
@@ -18,6 +18,7 @@ etls = [
     ("etl_raw.sql",        "CALL `sing1261.ali1_raw.sp_etl_raw`()",                    600),
     ("etl_trusted.sql",    "CALL `sing1261.ali1_trusted.sp_etl_trusted`()",            300),
     ("etl_curated.sql",    "CALL `sing1261.ali1_curated.sp_etl_curated`()",            300),
+    ("sql/etl_kpi.sql",    "CALL `sing1261.ali1_kpi.sp_etl_kpi`()",                   300),
     ("etl_predictive.sql", "CALL `sing1261.ali1_predictive.sp_etl_predictive`()",     1800),
 ]
 
