@@ -8,7 +8,7 @@
 
 ## Descripción general
 
-Pipeline de datos de extremo a extremo implementado en Google Cloud Platform para Alicorp. Ingiere datos transaccionales y maestros desde GCS, los transforma a través de cuatro capas (Raw → Trusted → Curated → Predictive) y entrena dos modelos de Machine Learning en BigQuery ML: pronóstico de ventas por canal (ARIMA_PLUS) y predicción de quiebre de stock (BOOSTED_TREE_CLASSIFIER). Sobre la capa Curated se construye una capa KPI con cubos analíticos implementados como **Materialized Views** en BigQuery, que sirven de fuente al dashboard Streamlit.
+Pipeline de datos de extremo a extremo implementado en Google Cloud Platform para Alicorp. Ingiere datos transaccionales y maestros desde GCS, los transforma a través de cinco capas (Raw → Trusted → Curated → KPI → Predictive) y entrena dos modelos de Machine Learning en BigQuery ML: pronóstico de ventas por canal (ARIMA_PLUS) y predicción de quiebre de stock (BOOSTED_TREE_CLASSIFIER). Sobre la capa Curated se construye una capa KPI con tres cubos analíticos OLAP implementados como **tablas regulares via Stored Procedure** en BigQuery, que sirven de fuente al dashboard Streamlit.
 
 ---
 
@@ -29,14 +29,14 @@ ali1_trusted    ← limpieza, deduplicación, flags de calidad
     ▼
 ali1_curated    ← modelo estrella: 7 dimensiones + 4 tablas de hechos
     │
-    ├──▶ ali1_predictive ← entrenamiento ML + predicciones
-    │        ├── ARIMA_PLUS               → pred_ventas_forecast (90 días × 6 canales)
-    │        └── BOOSTED_TREE_CLASSIFIER  → pred_quiebre_stock (scoring completo)
+    ├──▶ ali1_kpi        ← cubos OLAP (tablas regulares via sp_etl_kpi)
+    │        ├── CUBO_COMERCIAL_TBL  → ventas, margen, metas comerciales
+    │        ├── CUBO_FACTURAS_TBL   → ticket promedio, frecuencia de compra
+    │        └── CUBO_INVENTARIO_TBL → stock, quiebre, cobertura, metas operativas
     │
-    └──▶ ali1_kpi        ← cubos analíticos (Materialized Views) para el dashboard
-             ├── CUBO_COMERCIAL_MV   → ventas, margen, metas comerciales
-             ├── CUBO_FACTURAS       → ticket promedio, frecuencia de compra
-             └── CUBO_INVENTARIO_MV  → stock, quiebre, cobertura, metas operativas
+    └──▶ ali1_predictive ← entrenamiento ML + predicciones
+             ├── ARIMA_PLUS               → pred_ventas_forecast (90 días × 6 canales)
+             └── BOOSTED_TREE_CLASSIFIER  → pred_quiebre_stock (scoring completo)
 ```
 
 Todos los ETL son **idempotentes** y registran cada operación en su tabla `etl_control` con estado `EXITOSO`/`ERROR`, conteo de filas y timestamp.
@@ -110,12 +110,16 @@ FINAL/
 ├── run_all.py                      # Ejecuta el pipeline completo de inicio a fin
 │
 ├── sql/                            # Definición de los cubos analíticos (capa ali1_kpi)
-│   ├── cubo_comercial_mv.sql       # CUBO_COMERCIAL_MV — Materialized View de ventas
-│   ├── cubo_facturas_mv.sql        # CUBO_FACTURAS — Vista regular (ver nota abajo)
-│   └── cubo_inventario_mv.sql      # CUBO_INVENTARIO_MV — Materialized View de inventario
+│   ├── etl_kpi.sql                 # Stored procedure sp_etl_kpi — crea los 3 cubos _TBL
+│   ├── cubo_comercial_mv.sql       # MV de referencia (superada por etl_kpi.sql)
+│   ├── cubo_facturas_mv.sql        # MV de referencia (superada por etl_kpi.sql)
+│   └── cubo_inventario_mv.sql      # MV de referencia (superada por etl_kpi.sql)
 │
+├── run_etl_kpi.py                  # Ejecuta solo ETL KPI (crea SP y llama CALL)
 ├── create_datasets.py              # Setup inicial de datasets
 ├── documentacion_modelos.md        # Documentación detallada de modelos ML
+├── documentacion_elt.md            # Documentación del pipeline ELT por capa
+├── documentacion_olap.md           # Documentación de los cubos OLAP
 ├── README.md                       # Este archivo
 │
 └── dashboard/                      # Aplicación Streamlit
@@ -182,6 +186,7 @@ python run_all.py
 python run_etl.py            # Solo capa Raw
 python run_etl_trusted.py    # Solo capa Trusted
 python run_etl_curated.py    # Solo capa Curated
+python run_etl_kpi.py        # Solo cubos KPI (CUBO_COMERCIAL_TBL, CUBO_FACTURAS_TBL, CUBO_INVENTARIO_TBL)
 python run_etl_predictive.py # Solo capa Predictive (entrena modelos ML)
 ```
 
@@ -214,38 +219,40 @@ python etl_raw.py
 
 ### ali1_kpi — Capa de cubos analíticos
 
-Esta capa expone los datos de `ali1_curated` como **cubos analíticos listos para el dashboard**, pre-agregados por todas las dimensiones relevantes (tiempo, canal, geografía, producto, vendedor, almacén).
+Esta capa expone los datos de `ali1_curated` como **cubos OLAP listos para el dashboard**, pre-agregados por todas las dimensiones relevantes (tiempo, canal, geografía, producto, vendedor, almacén). Los tres cubos son **tablas regulares** creadas por el Stored Procedure `sp_etl_kpi()` con FULL_REFRESH.
 
-#### ¿Por qué Materialized Views y no vistas normales?
+#### ¿Por qué tablas regulares y no Materialized Views?
 
-Las vistas normales (`CREATE OR REPLACE VIEW`) ejecutan los JOINs y agregaciones desde cero en cada consulta del dashboard. Con datos históricos de 2–3 años a granularidad diaria, eso implica escanear millones de filas cada vez que alguien filtra por región o cambia el período.
+Las **Materialized Views** de BigQuery tienen restricciones de SQL que impedían implementar los cubos de forma completa:
 
-Las **Materialized Views** (`CREATE MATERIALIZED VIEW`) hacen que BigQuery compute y almacene físicamente el resultado. Cuando el dashboard consulta el cubo, lee directamente del resultado pre-computado en lugar de recalcular. Esto es equivalente a lo que hacen los motores OLAP clásicos (SSAS, Mondrian) con sus agregaciones pre-calculadas.
+| Restricción | Cubo afectado | Impacto |
+|---|---|---|
+| `COUNT(DISTINCT)` no soportado | CUBO_FACTURAS_TBL | No se podía contar facturas ni clientes únicos |
+| Expresiones entre múltiples agregaciones no soportadas | CUBO_INVENTARIO_TBL | `tasa_quiebre_pct` y `dias_cobertura` no podían calcularse en SQL |
 
-Se configuran con `refresh_interval_minutes = 60`, por lo que BigQuery actualiza automáticamente el contenido cada hora cuando las tablas base cambian.
+Las tablas regulares vía SP no tienen estas restricciones, son del mismo tipo, tienen el mismo patrón de carga y se integran naturalmente al pipeline existente. El resultado es equivalente al de las MVs en cuanto a pre-cómputo, pero sin limitaciones de SQL.
 
 #### Cubos disponibles
 
-| Cubo | Tipo BigQuery | Filas | Razón del tipo |
+| Cubo | Tipo BigQuery | Filas | Descripción |
 |---|---|---|---|
-| `CUBO_COMERCIAL_MV` | **Materialized View** | ~500k | Soporta todos los agregados necesarios (`SUM`, `MAX`) |
-| `CUBO_FACTURAS` | Vista normal | — | BigQuery no soporta `COUNT(DISTINCT)` en Materialized Views; se mantiene como vista para calcular ticket promedio y frecuencia de compra |
-| `CUBO_INVENTARIO_MV` | **Materialized View** | ~40k | Soporta todos los agregados; `dias_cobertura` se deriva en el dashboard como `stock / demanda` |
+| `CUBO_COMERCIAL_TBL` | Tabla regular | ~500,000 | Ventas, margen, devoluciones y metas comerciales |
+| `CUBO_FACTURAS_TBL` | Tabla regular | ~172,000 | Facturas y clientes únicos para ticket promedio y frecuencia de compra |
+| `CUBO_INVENTARIO_TBL` | Tabla regular | ~40,000 | Stock, quiebre (`tasa_quiebre_pct`), cobertura (`dias_cobertura`) y metas operativas |
 
 #### Para recrear los cubos
 
 ```bash
-# Desde BigQuery Console o con el cliente Python:
-python -c "
-from google.cloud import bigquery
-client = bigquery.Client(project='sing1261')
-for f in ['sql/cubo_comercial_mv.sql', 'sql/cubo_facturas_mv.sql', 'sql/cubo_inventario_mv.sql']:
-    client.query(open(f).read()).result()
-    print(f, '— OK')
-"
+python run_etl_kpi.py
 ```
 
-> **Para volver a las vistas originales**: cambiar `CUBO_COMERCIAL_MV` → `CUBO_COMERCIAL` y `CUBO_INVENTARIO_MV` → `CUBO_INVENTARIO` en `dashboard/utils/bigquery.py`. Las vistas originales permanecen intactas en BigQuery.
+El resultado de cada cubo queda registrado en `sing1261.ali1_kpi.etl_control`:
+
+```sql
+SELECT tabla_destino, estado, registros_cargados, fecha_carga
+FROM `sing1261.ali1_kpi.etl_control`
+ORDER BY fecha_carga DESC;
+```
 
 ### ali1_predictive — Modelos ML
 Ver sección **Modelos predictivos** abajo.
@@ -338,6 +345,7 @@ Para consultar el estado del pipeline:
 SELECT * FROM `sing1261.ali1_raw.etl_control` ORDER BY fecha_carga DESC LIMIT 50;
 SELECT * FROM `sing1261.ali1_trusted.etl_control` ORDER BY fecha_carga DESC;
 SELECT * FROM `sing1261.ali1_curated.etl_control` ORDER BY fecha_carga DESC;
+SELECT * FROM `sing1261.ali1_kpi.etl_control` ORDER BY fecha_carga DESC;
 ```
 
 ---
@@ -371,10 +379,12 @@ El dashboard se abre en `http://localhost:8501`.
 
 | Función | Tabla BigQuery | Tipo | TTL caché |
 |---|---|---|---|
-| `get_comercial()` | `sing1261.ali1_kpi.CUBO_COMERCIAL_MV` | Materialized View | 1 hora |
-| `get_facturas()` | `sing1261.ali1_kpi.CUBO_FACTURAS` | Vista normal | 1 hora |
-| `get_inventario()` | `sing1261.ali1_kpi.CUBO_INVENTARIO_MV` | Materialized View | 1 hora |
-| `get_frecuencia_compra()` | `sing1261.ali1_curated.FACT_VENTAS` | Tabla física | Sin caché (filtros dinámicos) |
+| `get_comercial()` | `sing1261.ali1_kpi.CUBO_COMERCIAL_TBL` | Tabla regular | 1 hora |
+| `get_facturas()` | `sing1261.ali1_kpi.CUBO_FACTURAS_TBL` | Tabla regular | 1 hora |
+| `get_inventario()` | `sing1261.ali1_kpi.CUBO_INVENTARIO_TBL` | Tabla regular | 1 hora |
+| `get_frecuencia_compra()` | `sing1261.ali1_curated.FACT_VENTAS` | Tabla física | Por combinación de filtros* |
+
+> \* `get_frecuencia_compra()` requiere `COUNT(DISTINCT id_cliente)` sobre los registros filtrados, lo que no puede derivarse sumando columnas pre-agregadas. Se ejecuta una consulta a BigQuery por cada nueva combinación de filtros; combinaciones repetidas se sirven del caché.
 
 El caché de Streamlit (`@st.cache_data(ttl=3600)`) almacena el DataFrame en memoria durante 1 hora. La primera carga descarga todos los datos; las interacciones posteriores (filtros, navegación) operan sobre el DataFrame en memoria sin nuevas consultas a BigQuery.
 
@@ -444,7 +454,7 @@ pip install streamlit plotly pandas google-cloud-bigquery google-cloud-bigquery-
 |---|---|
 | **Cloud Storage (GCS)** | Almacenamiento de archivos CSV fuente (`ali1_bucket`) |
 | **BigQuery** | Data warehouse: datasets Raw, Trusted, Curated, KPI y Predictive |
-| **BigQuery Materialized Views** | Pre-cómputo OLAP de los cubos analíticos (`ali1_kpi`); se refrescan automáticamente cada 60 min |
+| **BigQuery Stored Procedures** | Stored Procedure `sp_etl_kpi()` crea los tres cubos OLAP como tablas regulares con FULL_REFRESH |
 | **BigQuery Storage API** | Transferencia rápida de datos al dashboard mediante protocolo Arrow columnar |
 | **BigQuery ML** | Entrenamiento y scoring de modelos ARIMA_PLUS y BOOSTED_TREE_CLASSIFIER |
 

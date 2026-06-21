@@ -15,6 +15,9 @@ GCS (ali1_bucket/raw/)
         │
         ▼
   [T] ali1_curated      ← modelado dimensional (DIMs + FACTs)
+        │
+        ▼
+  [T] ali1_kpi          ← cubos OLAP pre-agregados (tablas regulares via SP)
 ```
 
 ---
@@ -255,3 +258,60 @@ Tablas en el dataset `sing1261.ali1_curated`:
 | `FACT_METAS_COMERCIAL` | Hecho | Metas comerciales por canal y periodo |
 | `FACT_METAS_OPERATIVO` | Hecho | Metas operativas por almacén y periodo |
 | `etl_control` | Log | Log de auditoría de la capa curated |
+
+---
+
+## 4. Transformación — Capa KPI
+
+### Descripción
+
+Construye los tres cubos OLAP sobre la capa `ali1_curated`. Cada cubo es una **tabla regular** creada con `CREATE OR REPLACE TABLE` dentro del Stored Procedure `sp_etl_kpi()`. La carga es siempre FULL_REFRESH: la tabla se recrea completa en cada ejecución.
+
+Se eligió el enfoque de tabla regular (en lugar de Materialized Views) porque BigQuery impone restricciones sobre las MVs que impedían implementar los cubos de forma completa y homogénea:
+
+| Restricción de Materialized View | Cubo afectado | Solución con tabla |
+|---|---|---|
+| `COUNT(DISTINCT)` no soportado | CUBO_FACTURAS_TBL | `COUNT(DISTINCT num_factura)` y `COUNT(DISTINCT id_cliente)` disponibles |
+| Expresiones que combinan varias agregaciones no soportadas | CUBO_INVENTARIO_TBL | `tasa_quiebre_pct` y `dias_cobertura` se calculan directamente en SQL |
+
+Cada cubo se envuelve en un bloque `BEGIN / EXCEPTION WHEN ERROR THEN / END`, de modo que un fallo en un cubo no interrumpe los siguientes y el error queda registrado en `etl_control`.
+
+**CUBO_COMERCIAL_TBL**
+- Une `FACT_VENTAS` con `DIM_TIEMPO`, `DIM_CANAL`, `DIM_GEOGRAFIA`, `DIM_PRODUCTO`, `DIM_VENDEDOR` y `FACT_METAS_COMERCIAL`.
+- Granularidad: Día × Canal × Departamento × SKU × Vendedor.
+- Agrega métricas de ventas (`SUM`), márgenes y metas comerciales (`MAX` por canal × periodo).
+
+**CUBO_FACTURAS_TBL**
+- Une `FACT_VENTAS` con `DIM_TIEMPO`, `DIM_CANAL`, `DIM_GEOGRAFIA` y `DIM_VENDEDOR`. Sin dimensión Producto para evitar doble conteo de facturas y clientes.
+- Granularidad: Día × Canal × Departamento × Vendedor.
+- Incluye `COUNT(DISTINCT num_factura)` y `COUNT(DISTINCT id_cliente)` para métricas de ticket promedio y frecuencia de compra.
+
+**CUBO_INVENTARIO_TBL**
+- Une `FACT_INVENTARIO` con `DIM_TIEMPO`, `DIM_ALMACEN`, `DIM_PRODUCTO` y `FACT_METAS_OPERATIVO`.
+- Granularidad: Mes × Almacén × SKU (los snapshots de inventario son mensuales).
+- Pre-calcula en SQL `tasa_quiebre_pct = SUM(CASE WHEN stock<=0 THEN 1 ELSE 0 END) / COUNT(*) * 100` y `dias_cobertura = SUM(stock) / NULLIF(SUM(demanda), 0)`.
+
+Cada operación registra su resultado en `sing1261.ali1_kpi.etl_control`.
+
+### Servicio cloud usado
+
+| Servicio | Rol |
+|---|---|
+| **BigQuery** (`ali1_curated`) | Fuente de datos (FACT + DIM) |
+| **BigQuery** (`ali1_kpi`) | Destino de los cubos |
+
+### Entrada
+
+Tablas del dataset `sing1261.ali1_curated`:
+`FACT_VENTAS`, `FACT_INVENTARIO`, `FACT_METAS_COMERCIAL`, `FACT_METAS_OPERATIVO`, `DIM_TIEMPO`, `DIM_CANAL`, `DIM_GEOGRAFIA`, `DIM_PRODUCTO`, `DIM_VENDEDOR`, `DIM_ALMACEN`.
+
+### Salida
+
+Tablas en el dataset `sing1261.ali1_kpi`:
+
+| Tabla | Filas | Descripción |
+|---|---|---|
+| `CUBO_COMERCIAL_TBL` | ~500,000 | Métricas de ventas, margen, devoluciones y metas comerciales |
+| `CUBO_FACTURAS_TBL` | ~172,000 | Facturas y clientes únicos para ticket promedio y frecuencia de compra |
+| `CUBO_INVENTARIO_TBL` | ~40,000 | Stock, quiebre, cobertura y metas operativas |
+| `etl_control` | — | Log de auditoría de la capa KPI |
