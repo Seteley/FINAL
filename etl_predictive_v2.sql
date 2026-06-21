@@ -185,150 +185,126 @@ BEGIN
   END;
 
   -- =========================================================
-  -- MODELO 2 v2: CLASIFICACIÓN DE QUIEBRE DE STOCK (BOOSTED_TREE_CLASSIFIER)
-  -- Igual que v1 PERO con la evaluación corregida: se evalúa SOLO sobre el
-  -- holdout 2025 (split = TRUE), no sobre toda la tabla de entrenamiento.
-  -- Split temporal: 2023-2024 = TRAIN, 2025 = EVAL
+  -- MODELO 2 v2: SEGMENTACIÓN DE PRODUCTOS (KMEANS)
+  -- Reemplaza al clasificador de quiebre v1/v2: en este dataset los eventos de
+  -- riesgo (quiebre, devolución, bajo margen) no tienen señal predecible, pero los
+  -- productos SÍ tienen estructura real (precio, margen y rotación muy variables).
+  -- K-MEANS agrupa los SKU en segmentos de portafolio (tipo ABC) de forma descriptiva.
   -- =========================================================
 
-  -- Bloque 6: Tabla de entrenamiento — lag features sin leakage (idéntico a v1)
+  -- Bloque 6: Tabla de features por SKU (precio, margen, rotación, ventas, devolución)
   BEGIN
     DECLARE rows_loaded INT64 DEFAULT 0;
 
-    CREATE OR REPLACE TABLE `sing1261.ali1_predictive.train_quiebre_stock_v2` AS
-    WITH inv_lag AS (
-      SELECT
-        fi.id_producto,
-        fi.id_almacen,
-        fi.id_fecha,
-        fi.flag_quiebre,
-        LAG(fi.stock_disponible, 1)    OVER (PARTITION BY fi.id_producto, fi.id_almacen ORDER BY fi.id_fecha) AS stock_mes_anterior,
-        LAG(fi.stock_reservado, 1)     OVER (PARTITION BY fi.id_producto, fi.id_almacen ORDER BY fi.id_fecha) AS reservado_mes_anterior,
-        LAG(fi.dias_cobertura, 1)      OVER (PARTITION BY fi.id_producto, fi.id_almacen ORDER BY fi.id_fecha) AS cobertura_mes_anterior,
-        LAG(fi.demanda_diaria_prom, 1) OVER (PARTITION BY fi.id_producto, fi.id_almacen ORDER BY fi.id_fecha) AS demanda_mes_anterior,
-        fi.stock_disponible - LAG(fi.stock_disponible, 1)
-          OVER (PARTITION BY fi.id_producto, fi.id_almacen ORDER BY fi.id_fecha)                              AS tendencia_stock,
-        SUM(fi.flag_quiebre) OVER (
-          PARTITION BY fi.id_producto, fi.id_almacen
-          ORDER BY fi.id_fecha
-          ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-        )                                                                                                      AS quiebres_ultimos_3_meses
-      FROM `sing1261.ali1_curated.FACT_INVENTARIO` fi
-    )
+    CREATE OR REPLACE TABLE `sing1261.ali1_predictive.train_segmentacion_productos_v2` AS
     SELECT
-      il.flag_quiebre,
-      il.stock_mes_anterior,
-      il.reservado_mes_anterior,
-      il.cobertura_mes_anterior,
-      il.demanda_mes_anterior,
-      il.tendencia_stock,
-      il.quiebres_ultimos_3_meses,
-      dp.categoria,
-      dp.linea_negocio,
-      da.tipo_almacen,
-      da.macroregion,
-      dt.mes,
-      dt.trimestre,
-      EXTRACT(YEAR FROM dt.fecha) >= 2025 AS split
-    FROM inv_lag il
-    JOIN `sing1261.ali1_curated.DIM_PRODUCTO` dp ON il.id_producto = dp.id_producto
-    JOIN `sing1261.ali1_curated.DIM_ALMACEN`  da ON il.id_almacen  = da.id_almacen
-    JOIN `sing1261.ali1_curated.DIM_TIEMPO`   dt ON il.id_fecha    = dt.id_fecha
-    WHERE il.stock_mes_anterior IS NOT NULL;
+      p.id_producto,
+      p.cod_sku,
+      p.nombre_sku,
+      p.categoria,
+      p.linea_negocio,
+      p.precio_lista_soles,
+      ROUND(SAFE_DIVIDE(p.precio_lista_soles - p.costo_estandar_soles, p.precio_lista_soles) * 100, 2) AS margen_pct,
+      COALESCE(SUM(v.cantidad_vendida), 0)                                                              AS unidades_vendidas,
+      COALESCE(SUM(v.ventas_netas_soles), 0)                                                            AS ventas_netas,
+      ROUND(COALESCE(SAFE_DIVIDE(SUM(v.unidades_devueltas), NULLIF(SUM(v.cantidad_vendida), 0)) * 100, 0), 2) AS tasa_devolucion_pct
+    FROM `sing1261.ali1_curated.DIM_PRODUCTO` p
+    LEFT JOIN `sing1261.ali1_curated.FACT_VENTAS` v ON p.id_producto = v.id_producto
+    GROUP BY
+      p.id_producto, p.cod_sku, p.nombre_sku, p.categoria, p.linea_negocio,
+      p.precio_lista_soles, p.costo_estandar_soles;
 
-    SET rows_loaded = (SELECT COUNT(*) FROM `sing1261.ali1_predictive.train_quiebre_stock_v2`);
+    SET rows_loaded = (SELECT COUNT(*) FROM `sing1261.ali1_predictive.train_segmentacion_productos_v2`);
 
     INSERT INTO `sing1261.ali1_predictive.etl_control`
       (tabla_destino, tipo, estado, registros_cargados, mensaje_error, fecha_carga)
     VALUES
-      ('train_quiebre_stock_v2', 'TRAIN', 'EXITOSO', rows_loaded, CAST(NULL AS STRING), CURRENT_TIMESTAMP());
+      ('train_segmentacion_productos_v2', 'TRAIN', 'EXITOSO', rows_loaded, CAST(NULL AS STRING), CURRENT_TIMESTAMP());
 
   EXCEPTION WHEN ERROR THEN
     INSERT INTO `sing1261.ali1_predictive.etl_control`
       (tabla_destino, tipo, estado, registros_cargados, mensaje_error, fecha_carga)
     VALUES
-      ('train_quiebre_stock_v2', 'TRAIN', 'ERROR', CAST(NULL AS INT64), CAST(@@error.message AS STRING), CURRENT_TIMESTAMP());
+      ('train_segmentacion_productos_v2', 'TRAIN', 'ERROR', CAST(NULL AS INT64), CAST(@@error.message AS STRING), CURRENT_TIMESTAMP());
   END;
 
-  -- Bloque 7: Entrenamiento modelo BOOSTED_TREE_CLASSIFIER (split temporal custom)
+  -- Bloque 7: Entrenamiento modelo KMEANS (4 clusters, features estandarizadas)
   BEGIN
-    CREATE OR REPLACE MODEL `sing1261.ali1_predictive.model_quiebre_stock_v2`
+    CREATE OR REPLACE MODEL `sing1261.ali1_predictive.model_segmentacion_productos_v2`
     OPTIONS(
-      model_type            = 'BOOSTED_TREE_CLASSIFIER',
-      input_label_cols      = ['flag_quiebre'],
-      data_split_method     = 'CUSTOM',
-      data_split_col        = 'split',
-      auto_class_weights    = TRUE,
-      num_parallel_tree     = 4,
-      max_iterations        = 100,
-      enable_global_explain = TRUE
+      model_type          = 'KMEANS',
+      num_clusters        = 4,
+      standardize_features = TRUE
     )
-    AS SELECT * FROM `sing1261.ali1_predictive.train_quiebre_stock_v2`;
+    AS
+    SELECT precio_lista_soles, margen_pct, unidades_vendidas, ventas_netas, tasa_devolucion_pct
+    FROM `sing1261.ali1_predictive.train_segmentacion_productos_v2`;
 
     INSERT INTO `sing1261.ali1_predictive.etl_control`
       (tabla_destino, tipo, estado, registros_cargados, mensaje_error, fecha_carga)
     VALUES
-      ('model_quiebre_stock_v2', 'TRAIN', 'EXITOSO', 1, CAST(NULL AS STRING), CURRENT_TIMESTAMP());
+      ('model_segmentacion_productos_v2', 'TRAIN', 'EXITOSO', 1, CAST(NULL AS STRING), CURRENT_TIMESTAMP());
 
   EXCEPTION WHEN ERROR THEN
     INSERT INTO `sing1261.ali1_predictive.etl_control`
       (tabla_destino, tipo, estado, registros_cargados, mensaje_error, fecha_carga)
     VALUES
-      ('model_quiebre_stock_v2', 'TRAIN', 'ERROR', CAST(NULL AS INT64), CAST(@@error.message AS STRING), CURRENT_TIMESTAMP());
+      ('model_segmentacion_productos_v2', 'TRAIN', 'ERROR', CAST(NULL AS INT64), CAST(@@error.message AS STRING), CURRENT_TIMESTAMP());
   END;
 
-  -- Bloque 8 (CORREGIDO): Evaluación SOLO sobre el holdout 2025 (split = TRUE)
-  --   v1 evaluaba sobre la tabla completa (train + holdout) → métricas infladas.
+  -- Bloque 8: Evaluación del clustering (Davies-Bouldin, distancia media)
   BEGIN
     DECLARE rows_loaded INT64 DEFAULT 0;
 
     EXECUTE IMMEDIATE """
-      CREATE OR REPLACE TABLE `sing1261.ali1_predictive.eval_quiebre_stock_v2` AS
+      CREATE OR REPLACE TABLE `sing1261.ali1_predictive.eval_segmentacion_productos_v2` AS
       SELECT * FROM ML.EVALUATE(
-        MODEL `sing1261.ali1_predictive.model_quiebre_stock_v2`,
-        (SELECT * FROM `sing1261.ali1_predictive.train_quiebre_stock_v2` WHERE split = TRUE)
+        MODEL `sing1261.ali1_predictive.model_segmentacion_productos_v2`
       )
     """;
 
-    SET rows_loaded = (SELECT COUNT(*) FROM `sing1261.ali1_predictive.eval_quiebre_stock_v2`);
+    SET rows_loaded = (SELECT COUNT(*) FROM `sing1261.ali1_predictive.eval_segmentacion_productos_v2`);
 
     INSERT INTO `sing1261.ali1_predictive.etl_control`
       (tabla_destino, tipo, estado, registros_cargados, mensaje_error, fecha_carga)
     VALUES
-      ('eval_quiebre_stock_v2', 'EVALUATE', 'EXITOSO', rows_loaded, CAST(NULL AS STRING), CURRENT_TIMESTAMP());
+      ('eval_segmentacion_productos_v2', 'EVALUATE', 'EXITOSO', rows_loaded, CAST(NULL AS STRING), CURRENT_TIMESTAMP());
 
   EXCEPTION WHEN ERROR THEN
     INSERT INTO `sing1261.ali1_predictive.etl_control`
       (tabla_destino, tipo, estado, registros_cargados, mensaje_error, fecha_carga)
     VALUES
-      ('eval_quiebre_stock_v2', 'EVALUATE', 'ERROR', CAST(NULL AS INT64), CAST(@@error.message AS STRING), CURRENT_TIMESTAMP());
+      ('eval_segmentacion_productos_v2', 'EVALUATE', 'ERROR', CAST(NULL AS INT64), CAST(@@error.message AS STRING), CURRENT_TIMESTAMP());
   END;
 
-  -- Bloque 9: Predicciones — scoring completo del dataset
+  -- Bloque 9: Asignación de cada SKU a su segmento (cluster)
   BEGIN
     DECLARE rows_loaded INT64 DEFAULT 0;
 
     EXECUTE IMMEDIATE """
-      CREATE OR REPLACE TABLE `sing1261.ali1_predictive.pred_quiebre_stock_v2` AS
-      SELECT * FROM ML.PREDICT(
-        MODEL `sing1261.ali1_predictive.model_quiebre_stock_v2`,
-        (SELECT * EXCEPT(flag_quiebre, split)
-         FROM `sing1261.ali1_predictive.train_quiebre_stock_v2`)
+      CREATE OR REPLACE TABLE `sing1261.ali1_predictive.pred_segmentacion_productos_v2` AS
+      SELECT
+        CENTROID_ID AS cluster,
+        id_producto, cod_sku, nombre_sku, categoria, linea_negocio,
+        precio_lista_soles, margen_pct, unidades_vendidas, ventas_netas, tasa_devolucion_pct
+      FROM ML.PREDICT(
+        MODEL `sing1261.ali1_predictive.model_segmentacion_productos_v2`,
+        (SELECT * FROM `sing1261.ali1_predictive.train_segmentacion_productos_v2`)
       )
     """;
 
-    SET rows_loaded = (SELECT COUNT(*) FROM `sing1261.ali1_predictive.pred_quiebre_stock_v2`);
+    SET rows_loaded = (SELECT COUNT(*) FROM `sing1261.ali1_predictive.pred_segmentacion_productos_v2`);
 
     INSERT INTO `sing1261.ali1_predictive.etl_control`
       (tabla_destino, tipo, estado, registros_cargados, mensaje_error, fecha_carga)
     VALUES
-      ('pred_quiebre_stock_v2', 'PREDICT', 'EXITOSO', rows_loaded, CAST(NULL AS STRING), CURRENT_TIMESTAMP());
+      ('pred_segmentacion_productos_v2', 'PREDICT', 'EXITOSO', rows_loaded, CAST(NULL AS STRING), CURRENT_TIMESTAMP());
 
   EXCEPTION WHEN ERROR THEN
     INSERT INTO `sing1261.ali1_predictive.etl_control`
       (tabla_destino, tipo, estado, registros_cargados, mensaje_error, fecha_carga)
     VALUES
-      ('pred_quiebre_stock_v2', 'PREDICT', 'ERROR', CAST(NULL AS INT64), CAST(@@error.message AS STRING), CURRENT_TIMESTAMP());
+      ('pred_segmentacion_productos_v2', 'PREDICT', 'ERROR', CAST(NULL AS INT64), CAST(@@error.message AS STRING), CURRENT_TIMESTAMP());
   END;
 
 END;

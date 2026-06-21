@@ -201,7 +201,7 @@ def render(df_com, df_fac, filtros):
         )
         fig_canal.update_layout(**PLOT_LAYOUT, height=300, xaxis=dict(tickangle=45),
                                 legend=dict(orientation="h", y=-0.3, font_size=10))
-        st.plotly_chart(fig_canal, use_container_width=True)
+        st.plotly_chart(fig_canal, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_mapa:
@@ -230,7 +230,7 @@ def render(df_com, df_fac, filtros):
             coloraxis_showscale=False,
             margin=dict(l=0, r=0, t=0, b=0),
         )
-        st.plotly_chart(fig_mapa, use_container_width=True)
+        st.plotly_chart(fig_mapa, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Tabla KPI-10 (mitad izquierda) + Dona + YTD (mitad derecha) ───────────
@@ -256,7 +256,7 @@ def render(df_com, df_fac, filtros):
                 "marca": "Marca", "nombre_sku": "SKU",
                 "cantidad_vendida": "Cantidad",
             }),
-            use_container_width=True, hide_index=True, height=420,
+            width='stretch', hide_index=True, height=420,
         )
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -276,7 +276,7 @@ def render(df_com, df_fac, filtros):
             showlegend=False,
             margin=dict(l=0, r=0, t=10, b=0),
         )
-        st.plotly_chart(fig_dona, use_container_width=True)
+        st.plotly_chart(fig_dona, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
         # YTD
@@ -296,5 +296,5 @@ def render(df_com, df_fac, filtros):
             margin=dict(l=20, r=80, t=20, b=10),
             legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top", font_size=10),
         )
-        st.plotly_chart(fig_ytd, use_container_width=True)
+        st.plotly_chart(fig_ytd, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)

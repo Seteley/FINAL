@@ -16,9 +16,10 @@
 cadena. La capa predictiva **debe** leer del modelo estrella (`curated`), no de los cubos
 (`kpi`), porque:
 
-1. **Grano atómico.** Los cubos de `kpi` vienen pre-agregados; el clasificador de quiebre
-   necesita los `LAG()` por `id_producto × id_almacen` del grano de `FACT_INVENTARIO`, que
-   no se puede reconstruir desde `CUBO_INVENTARIO_TBL`.
+1. **Grano atómico.** Los cubos de `kpi` vienen pre-agregados; el forecast necesita la serie
+   diaria por canal y la segmentación necesita los agregados por SKU del grano de
+   `FACT_VENTAS`, controlando exactamente qué se suma — no la pre-agregación multidimensional
+   de los cubos.
 2. **Sin sesgo de muestra.** `CUBO_COMERCIAL_TBL` hace `INNER JOIN` con
    `FACT_METAS_COMERCIAL` y descarta filas sin meta — entrenar sobre eso sesgaría el modelo.
 3. **Semántica limpia.** Los cubos mezclan medidas aditivas (`SUM`) con no aditivas (`MAX`
@@ -90,44 +91,61 @@ explica parte de la varianza con feriados e inversión promocional.
 
 ---
 
-## Modelo 2 v2: Clasificación de Quiebre de Stock (BOOSTED_TREE_CLASSIFIER)
+## Modelo 2 v2: Segmentación de Productos (KMEANS)
 
-### Cambio respecto a v1
-El modelo, las features y el split temporal son **idénticos** a v1. El cambio es una
-**corrección de la evaluación**:
+### Por qué se reemplazó el clasificador de quiebre de v1
+El modelo de quiebre de v1 reportaba ROC-AUC 98.5%, pero ese resultado venía **casi por
+completo de un leakage**: la feature `tendencia_stock` usaba el stock del propio período
+objetivo, y como el quiebre se define justo como "stock ≤ 0", el modelo leía la respuesta.
+Al corregir el leakage (features solo de información pasada), el desempeño cae a
+**ROC-AUC ≈ 0.47 — equivalente a azar**. Se diagnosticó que en este dataset (sintético) los
+eventos de riesgo **no tienen señal predecible**:
 
-> **Bug en v1**: el bloque de evaluación llamaba a `ML.EVALUATE` sobre **toda**
-> `train_quiebre_stock` (train 2023-24 **+** holdout 2025). Como el modelo ya vio el train,
-> las métricas reportadas estaban **infladas**.
->
-> **Fix en v2**: `ML.EVALUATE` se ejecuta **solo sobre el holdout 2025** (`WHERE split = TRUE`,
-> 13,464 filas no vistas en entrenamiento). Las métricas resultantes son las **reales**.
+| Target de riesgo evaluado | Resultado |
+|---|---|
+| Quiebre próximo período (sin leakage) | ROC-AUC ~0.47 (azar) |
+| Devolución de venta | ~3% uniforme en todos los canales y categorías |
+| Bajo margen | margen ~22.5% constante (descuento ≈ 0 en toda la data) |
+| Churn de cliente | inviable: los 300 clientes están activos los 36 meses |
 
-### Variable objetivo y features
-Sin cambios respecto a v1 (todas las features del período anterior T-1 para evitar leakage):
-`stock_mes_anterior`, `reservado_mes_anterior`, `cobertura_mes_anterior`,
-`demanda_mes_anterior`, `tendencia_stock`, `quiebres_ultimos_3_meses`, `categoria`,
-`linea_negocio`, `tipo_almacen`, `macroregion`, `mes`, `trimestre`.
+En cambio, los **productos sí tienen estructura real** (precio 0.8–185, margen 17.9–42.5%,
+rotación muy variable), por lo que se optó por una **segmentación descriptiva con K-MEANS**,
+que no depende de poder predictivo y aporta valor de portafolio (tipo ABC).
 
-**Split**: 2023-2024 = TRAIN (25,846 filas) / 2025 = EVAL holdout (13,464 filas).
+### Objetivo
+Agrupar los 78 SKU en segmentos homogéneos por comportamiento comercial, para decisiones de
+portafolio: priorización, pricing, foco de surtido y políticas por tipo de producto.
 
-### Métricas — v1 (con leakage) vs v2 (holdout real)
-| Métrica | v1 (toda la tabla) | v2 (holdout 2025) |
+### Features (estandarizadas, `standardize_features = TRUE`)
+`precio_lista_soles`, `margen_pct`, `unidades_vendidas` (rotación),
+`ventas_netas` (monetary), `tasa_devolucion_pct`.
+
+### Algoritmo
+`CREATE MODEL ... OPTIONS(model_type='KMEANS', num_clusters=4, standardize_features=TRUE)`.
+La estandarización es clave porque las features están en escalas muy distintas (soles vs %).
+
+### Métricas del clustering
+| Métrica | Valor | Interpretación |
 |---|---|---|
-| Precision | 54.28% | **47.13%** |
-| Recall | 99.91% | **99.65%** |
-| F1-Score | 70.34% | **63.99%** |
-| ROC-AUC | 98.53% | **97.74%** |
-| Accuracy | 95.46% | **95.20%** |
+| Davies-Bouldin index | 1.585 | Menor = clusters más separados/compactos |
+| Mean squared distance | 2.969 | Distancia media intra-cluster (espacio estandarizado) |
 
-Las métricas honestas de v2 son algo más bajas (lo esperado al eliminar el leakage de
-evaluación), pero siguen siendo **fuertes**: ROC-AUC 97.7% y recall 99.6%. El recall casi
-total es el comportamiento correcto para alertas de inventario — es preferible una falsa
-alarma a un stock-out. El ROC-AUC alto confirma buena discriminación al ajustar el umbral.
+### Segmentos resultantes (78 SKU)
+| Cluster | SKUs | Precio prom | Margen prom | Ventas prom | Perfil |
+|---|---|---|---|---|---|
+| 1 | 23 | S/ 11.6 | 34.0% | S/ 18.6M | Commodity estrella: bajo precio, alto margen, alto volumen |
+| 2 | 41 | S/ 12.1 | 28.6% | S/ 3.7M | Cola larga: bajo aporte de ventas |
+| 3 | 4 | S/ 156.5 | 21.8% | S/ 4.6M | Premium nicho: precio muy alto, margen bajo |
+| 4 | 10 | S/ 79.5 | 24.7% | S/ 15.9M | Premium de volumen: precio alto y ventas altas |
+
+### Decisiones que aporta
+- **Portafolio ABC**: distingue los SKU commodity estrella (cluster 1) del resto.
+- **Foco comercial**: el cluster 2 (41 SKU de bajo aporte) es candidato a racionalización.
+- **Pricing/margen**: el cluster 3 (premium nicho, margen bajo) merece revisión de precio.
 
 ### Tablas generadas
-`train_quiebre_stock_v2`, `model_quiebre_stock_v2`, `eval_quiebre_stock_v2`,
-`pred_quiebre_stock_v2`.
+`train_segmentacion_productos_v2`, `model_segmentacion_productos_v2`,
+`eval_segmentacion_productos_v2`, `pred_segmentacion_productos_v2` (cada SKU con su `cluster`).
 
 ---
 
@@ -140,8 +158,9 @@ alarma a un stock-out. El ROC-AUC alto confirma buena discriminación al ajustar
 | Runner Python | `run_etl_predictive.py` | `run_etl_predictive_v2.py` |
 | Forecast — algoritmo | ARIMA_PLUS | ARIMA_PLUS_XREG (+ regresores) |
 | Forecast — tablas | `*_ventas_forecast` | `*_ventas_forecast_v2` (+ `future_regressors_v2`) |
-| Clasificador — evaluación | toda la tabla (leakage) | solo holdout 2025 |
-| Clasificador — tablas | `*_quiebre_stock` | `*_quiebre_stock_v2` |
+| 2.º modelo — tipo | Clasificación de quiebre (BOOSTED_TREE) | Segmentación de productos (KMEANS) |
+| 2.º modelo — motivo | — | Riesgo sin señal en estos datos → se pivota a clustering descriptivo |
+| 2.º modelo — tablas | `*_quiebre_stock` | `*_segmentacion_productos_v2` |
 
 Ambas versiones coexisten en `sing1261.ali1_predictive` y registran su ejecución en la misma
 tabla de control `etl_control`.
@@ -155,6 +174,6 @@ python run_etl_predictive_v2.py
 
 ## Servicio cloud usado
 **BigQuery ML** (Google Cloud Platform)
-Funciones: `CREATE MODEL` (ARIMA_PLUS_XREG / BOOSTED_TREE_CLASSIFIER),
+Funciones: `CREATE MODEL` (ARIMA_PLUS_XREG / KMEANS),
 `ML.ARIMA_EVALUATE`, `ML.FORECAST` (con regresores futuros), `ML.EVALUATE`, `ML.PREDICT`.
 Dataset: `sing1261.ali1_predictive`.

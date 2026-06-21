@@ -110,7 +110,7 @@ def render(df_inv, filtros):
             paper_bgcolor="white", font_color="#1a1a1a", height=260,
             margin=dict(l=20, r=20, t=20, b=10),
         )
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.plotly_chart(fig_gauge, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_bar_alm:
@@ -137,7 +137,7 @@ def render(df_inv, filtros):
                               xaxis=dict(tickangle=30),
                               margin=dict(l=20, r=120, t=20, b=10),
                               legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top"))
-        st.plotly_chart(fig_alm, use_container_width=True)
+        st.plotly_chart(fig_alm, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Fila 2: treemap + días cobertura ──────────────────────────────────────
@@ -154,7 +154,7 @@ def render(df_inv, filtros):
         )
         fig_tree.update_layout(paper_bgcolor="white", font_color="#1a1a1a",
                                height=300, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig_tree, use_container_width=True)
+        st.plotly_chart(fig_tree, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_dias:
@@ -184,7 +184,7 @@ def render(df_inv, filtros):
         fig_dc.update_layout(**PLOT_LAYOUT, height=320,
                              margin=dict(l=20, r=120, t=20, b=10),
                              legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top"))
-        st.plotly_chart(fig_dc, use_container_width=True)
+        st.plotly_chart(fig_dc, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Fila 3: series temporales ──────────────────────────────────────────────
@@ -216,7 +216,7 @@ def render(df_inv, filtros):
                              xaxis=dict(tickangle=45, tickfont_size=8),
                              margin=dict(l=20, r=120, t=20, b=10),
                              legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top"))
-        st.plotly_chart(fig_sq, use_container_width=True)
+        st.plotly_chart(fig_sq, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_serie_d:
@@ -250,7 +250,7 @@ def render(df_inv, filtros):
                              xaxis=dict(tickangle=45, tickfont_size=8),
                              margin=dict(l=20, r=120, t=20, b=10),
                              legend=dict(orientation="v", x=1.02, y=1, xanchor="left", yanchor="top"))
-        st.plotly_chart(fig_sd, use_container_width=True)
+        st.plotly_chart(fig_sd, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Tabla pivot ────────────────────────────────────────────────────────────
@@ -264,5 +264,5 @@ def render(df_inv, filtros):
     tabla = df_pivot.pivot_table(
         index="categoria", columns="nombre_almacen", values="tasa", aggfunc="mean"
     ).round(1).reset_index()
-    st.dataframe(tabla, use_container_width=True, hide_index=True)
+    st.dataframe(tabla, width='stretch', hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
