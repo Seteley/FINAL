@@ -59,15 +59,23 @@ st.markdown("""
 
 import paginas.comercial  as pag_comercial
 import paginas.inventario as pag_inventario
-from utils.bigquery import get_comercial, get_facturas, get_inventario
+import paginas.predictiva as pag_predictiva
+from utils.bigquery import (get_comercial, get_facturas, get_inventario,
+                            get_pred_ventas, get_hist_ventas,
+                            get_pred_segmentacion, get_eval_segmentacion)
 
 # Cargar datos (cacheados)
 df_com = get_comercial()
 df_fac = get_facturas()
 df_inv = get_inventario()
+df_pred_v = get_pred_ventas()
+df_hist_v = get_hist_ventas()
+df_seg    = get_pred_segmentacion()
+eval_seg  = get_eval_segmentacion()
 
 # Navegación por tabs
-tab_com, tab_inv = st.tabs(["📈 Gestión Comercial", "📦 Gestión Operativa"])
+tab_com, tab_inv, tab_pred = st.tabs(
+    ["📈 Gestión Comercial", "📦 Gestión Operativa", "🔮 Predictiva"])
 
 # ── Tab Comercial ─────────────────────────────────────────────────────────────
 with tab_com:
@@ -109,3 +117,20 @@ with tab_inv:
 
     filtros_inv = dict(periodo=sel_periodo_i, almacen=sel_almacen, categoria=sel_categoria)
     pag_inventario.render(df_inv, filtros_inv)
+
+# ── Tab Predictiva ──────────────────────────────────────────────────────────────
+with tab_pred:
+    with st.expander("🔍 Filtros", expanded=False):
+        fp1, fp2, fp3 = st.columns(3)
+        with fp1:
+            sel_canal_p = st.multiselect("Canal",
+                sorted(df_pred_v["nombre_canal"].dropna().unique().tolist()), key="p_canal")
+        with fp2:
+            sel_cluster = st.multiselect("Cluster",
+                sorted(df_seg["cluster"].dropna().astype(str).unique().tolist()), key="p_cluster")
+        with fp3:
+            sel_categoria_p = st.multiselect("Categoría",
+                sorted(df_seg["categoria"].dropna().unique().tolist()), key="p_categoria")
+
+    filtros_pred = dict(canal=sel_canal_p, cluster=sel_cluster, categoria=sel_categoria_p)
+    pag_predictiva.render(df_hist_v, df_pred_v, df_seg, eval_seg, filtros_pred)
