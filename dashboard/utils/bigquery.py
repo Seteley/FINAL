@@ -7,7 +7,7 @@ CLIENT = bigquery.Client(project=PROJECT)
 
 
 def _query(sql: str) -> pd.DataFrame:
-    return CLIENT.query(sql).to_dataframe()
+    return CLIENT.query(sql).to_dataframe(create_bqstorage_client=False)
 
 
 @st.cache_data(ttl=3600)

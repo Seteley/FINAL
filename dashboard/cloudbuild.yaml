@@ -1,0 +1,11 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/sing1261/dashboard-repo/dashboard:latest'
+      - '.'
+images:
+  - 'us-central1-docker.pkg.dev/sing1261/dashboard-repo/dashboard:latest'
+options:
+  logging: LEGACY
